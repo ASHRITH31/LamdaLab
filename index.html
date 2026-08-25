@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LambdaLab 3D — Global Subsea Infrastructure</title>
   
-  <!-- Load Tailwind CSS for Styling -->
+  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- Load React, ReactDOM, and Babel -->
+  <!-- React, ReactDOM, and Babel -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   
-  <!-- Load Three.js and Globe.GL -->
+  <!-- Three.js and Globe.GL -->
   <script src="https://unpkg.com/three"></script>
   <script src="https://unpkg.com/globe.gl"></script>
 </head>
@@ -24,139 +24,195 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // --- Sample Data Layer (Cable Spans & PoP Landing Stations) ---
-    const POPS = [
-      { id: 'pop-mrs', name: 'Marseille SLTE / PoP', country: 'France', lat: 43.2965, lng: 5.3698, size: 0.8 },
-      { id: 'pop-bom', name: 'Mumbai Landing Station', country: 'India', lat: 18.96, lng: 72.82, size: 0.9 },
-      { id: 'pop-nyc', name: 'New York City PoP', country: 'USA', lat: 40.7128, lng: -74.006, size: 0.8 },
-      { id: 'pop-sin', name: 'Singapore Changi PoP', country: 'Singapore', lat: 1.3521, lng: 103.8198, size: 0.8 },
-      { id: 'pop-lis', name: 'Lisbon Landing Station', country: 'Portugal', lat: 38.7223, lng: -9.1393, size: 0.7 }
-    ];
-
-    const CABLES = [
-      {
-        id: 'cable-amitie',
-        name: 'Amitie Subsea Cable',
-        capacity: '320 Tbps',
-        operators: 'Meta, Microsoft, Vodafone, Aqua Comms',
-        coords: [{ lat: 40.7128, lng: -74.006 }, { lat: 38.7223, lng: -9.1393 }],
-        color: '#00F0FF'
-      },
-      {
-        id: 'cable-smw5',
-        name: 'SEA-ME-WE 5',
-        capacity: '24 Tbps',
-        operators: 'Bharti Airtel, Telecom Egypt, Orange, Singtel',
-        coords: [{ lat: 43.2965, lng: 5.3698 }, { lat: 18.96, lng: 72.82 }],
-        color: '#FF007A'
-      },
-      {
-        id: 'cable-aae1',
-        name: 'AAE-1 Subsea Cable',
-        capacity: '40 Tbps',
-        operators: 'China Unicom, PCCW Global, Telecom Egypt',
-        coords: [{ lat: 18.96, lng: 72.82 }, { lat: 1.3521, lng: 103.8198 }],
-        color: '#39FF14'
-      }
-    ];
-
     function LambdaLabGlobe() {
       const globeEl = useRef(null);
+      const worldRef = useRef(null);
+      
       const [search, setSearch] = useState('');
       const [hovered, setHovered] = useState(null);
+      const [popsData, setPopsData] = useState([]);
+      const [cablesData, setCablesData] = useState([]);
+      const [loading, setLoading] = useState(true);
 
       useEffect(() => {
-        // Initialize 3D Globe WebGL Container
+        // 1. Initialize 3D Globe WebGL Canvas
         const world = Globe()(globeEl.current)
           .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
           .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
-          
-          // Render PoP Landing Stations (Points)
-          .pointsData(POPS)
           .pointLat('lat')
           .pointLng('lng')
           .pointColor(() => '#00F0FF')
-          .pointRadius('size')
-          .pointAltitude(0.02)
-          .onPointHover(point => setHovered(point ? { ...point, type: 'pop' } : null))
-          .onPointClick(point => {
-            world.pointOfView({ lat: point.lat, lng: point.lng, altitude: 1.0 }, 1200);
-          })
-
-          // Render Subsea Cable Paths (Light Pulses)
-          .pathsData(CABLES.map(c => c.coords))
-          .pathPoints(d => d)
-          .pathPointLat(p => p.lat)
-          .pathPointLng(p => p.lng)
-          .pathColor(path => {
-            const cable = CABLES.find(c => c.coords === path);
-            return cable ? cable.color : '#ffffff';
-          })
-          .pathStroke(2)
+          .pointRadius(0.3)
+          .pointAltitude(0.015)
+          .pathPoints(d => d.coords)
+          .pathPointLat(p => p[1])
+          .pathPointLng(p => p[0])
+          .pathColor(d => d.color || '#38bdf8')
+          .pathStroke(1.2)
           .pathDashLength(0.1)
           .pathDashGap(0.008)
-          .pathDashAnimateTime(10000)
-          .onPathHover(path => {
-            const cable = CABLES.find(c => c.coords === path);
-            setHovered(cable ? { ...cable, type: 'cable' } : null);
+          .pathDashAnimateTime(12000);
+
+        // Store world reference for search manipulation
+        worldRef.current = world;
+
+        // Auto rotation settings
+        world.controls().autoRotate = true;
+        world.controls().autoRotateSpeed = 0.4;
+        world.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 });
+
+        // Event Listeners for Hover Tooltips
+        world.onPointHover(point => setHovered(point ? { ...point, type: 'pop' } : null));
+        world.onPointClick(point => {
+          world.pointOfView({ lat: point.lat, lng: point.lng, altitude: 0.8 }, 1200);
+          world.controls().autoRotate = false;
+        });
+
+        world.onPathHover(path => setHovered(path ? { ...path, type: 'cable' } : null));
+
+        // 2. Fetch Real-World Subsea Cables & Landing Points from TeleGeography
+        Promise.all([
+          fetch('https://raw.githubusercontent.com/telegeography/submarine-cable-map-data/master/public/api/v3/landing-point/landing-point-geo.json').then(r => r.json()),
+          fetch('https://raw.githubusercontent.com/telegeography/submarine-cable-map-data/master/public/api/v3/cable/cable-geo.json').then(r => r.json())
+        ]).then(([landingGeo, cableGeo]) => {
+
+          // Parse Landing Station PoPs
+          const parsedPops = landingGeo.features.map(f => ({
+            id: f.properties.id,
+            name: f.properties.name,
+            lat: f.geometry.coordinates[1],
+            lng: f.geometry.coordinates[0]
+          }));
+
+          // Parse Subsea Cables
+          const parsedCables = cableGeo.features.map(f => {
+            // Flatten multilinestring coordinates
+            const lines = f.geometry.type === 'MultiLineString' 
+              ? f.geometry.coordinates 
+              : [f.geometry.coordinates];
+            
+            return {
+              id: f.properties.id,
+              name: f.properties.name,
+              color: f.properties.color || '#00F0FF',
+              coords: lines.flat()
+            };
           });
 
-        // Camera Setup
-        world.controls().autoRotate = true;
-        world.controls().autoRotateSpeed = 0.5;
-        world.pointOfView({ lat: 25.0, lng: -30.0, altitude: 2.2 });
+          setPopsData(parsedPops);
+          setCablesData(parsedCables);
+
+          // Update Globe with Real Data
+          world.pointsData(parsedPops);
+          world.pathsData(parsedCables);
+          setLoading(false);
+        }).catch(err => {
+          console.error("Error loading subsea data:", err);
+          setLoading(false);
+        });
+
       }, []);
 
+      // Search Handling Logic
       const handleSearch = (e) => {
         e.preventDefault();
-        const target = POPS.find(p => p.name.toLowerCase().includes(search.toLowerCase()));
-        if (target && globeEl.current) {
-          // Camera zoom to searched location
-          const world = Globe()(globeEl.current);
+        if (!search.trim() || !worldRef.current) return;
+
+        const query = search.toLowerCase().trim();
+        
+        // 1. Search Landing Point / PoP Name
+        const foundPoP = popsData.find(p => p.name.toLowerCase().includes(query));
+        
+        if (foundPoP) {
+          worldRef.current.pointOfView({ lat: foundPoP.lat, lng: foundPoP.lng, altitude: 0.7 }, 1500);
+          worldRef.current.controls().autoRotate = false;
+          setHovered({ ...foundPoP, type: 'pop' });
+          return;
+        }
+
+        // 2. Search Subsea Cable Name
+        const foundCable = cablesData.find(c => c.name.toLowerCase().includes(query));
+        if (foundCable && foundCable.coords.length > 0) {
+          const midPoint = foundCable.coords[Math.floor(foundCable.coords.length / 2)];
+          worldRef.current.pointOfView({ lat: midPoint[1], lng: midPoint[0], altitude: 1.2 }, 1500);
+          worldRef.current.controls().autoRotate = false;
+          setHovered({ ...foundCable, type: 'cable' });
+        }
+      };
+
+      const resetCamera = () => {
+        if (worldRef.current) {
+          worldRef.current.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 }, 1200);
+          worldRef.current.controls().autoRotate = true;
+          setHovered(null);
         }
       };
 
       return (
         <div className="relative w-screen h-screen">
-          {/* Header Bar */}
+          {/* Header & Controls Overlay */}
           <div className="absolute top-6 left-8 z-10 max-w-sm">
-            <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500">
-              LambdaLab
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500">
+                LambdaLab
+              </h1>
+              {loading && <span className="text-xs text-amber-400 animate-pulse font-mono">Loading Data...</span>}
+            </div>
+            
             <p className="text-xs text-slate-400 mt-1">
-              Section 1: Interactive Subsea Cable Globe & PoP Telemetry
+              Section 1: Real-World Interactive Subsea Cable Globe
             </p>
 
-            {/* Search Input */}
-            <form onSubmit={handleSearch} className="mt-4">
+            {/* Search Box */}
+            <form onSubmit={handleSearch} className="mt-4 flex gap-2">
               <input
                 type="text"
-                placeholder="Search PoP (e.g. Marseille, Mumbai)..."
+                placeholder="Search PoP or Cable (e.g., Chennai, SMW6)..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full px-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 shadow-2xl backdrop-blur-md"
               />
+              <button 
+                type="submit"
+                className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-xs text-white font-semibold rounded-xl transition-all shadow-lg"
+              >
+                Go
+              </button>
             </form>
+
+            <button 
+              onClick={resetCamera}
+              className="mt-2 text-[10px] text-slate-400 hover:text-cyan-400 underline transition-all"
+            >
+              Reset Camera View
+            </button>
           </div>
 
-          {/* Hover Metadata Tooltip Card */}
+          {/* Hover Tooltip Overlay */}
           {hovered && (
             <div className="absolute bottom-8 left-8 z-10 p-4 bg-slate-900/95 border border-cyan-500/40 rounded-2xl shadow-2xl max-w-xs backdrop-blur-md animate-in fade-in duration-200">
               <div className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">
-                {hovered.type === 'pop' ? '⚡ Point of Presence (PoP)' : '🌊 Subsea Cable Route'}
+                {hovered.type === 'pop' ? '⚡ Landing Station / PoP' : '🌊 Subsea Cable Route'}
               </div>
               <h3 className="text-base font-bold text-white">{hovered.name}</h3>
-              {hovered.country && <p className="text-xs text-slate-300 mt-1">Location: {hovered.country}</p>}
-              {hovered.capacity && <p className="text-xs text-emerald-400 font-mono mt-1">Design Cap: {hovered.capacity}</p>}
-              {hovered.operators && <p className="text-xs text-slate-400 mt-1">Consortium: {hovered.operators}</p>}
+              {hovered.lat && (
+                <p className="text-xs text-slate-400 font-mono mt-1">
+                  Coords: {hovered.lat.toFixed(2)}°, {hovered.lng.toFixed(2)}°
+                </p>
+              )}
             </div>
           )}
 
-          {/* WebGL Canvas Container */}
+          {/* 3D Earth Render Container */}
           <div ref={globeEl} className="w-full h-full" />
         </div>
       );
     }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<LambdaLabGlobe />);
+  </script>
+</body>
+</html>
 
     ReactDOM.createRoot(document.getElementById('root')).render(<LambdaLabGlobe />);
   </script>
