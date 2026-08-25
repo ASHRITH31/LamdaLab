@@ -32,17 +32,19 @@
       const [hovered, setHovered] = useState(null);
       const [popsData, setPopsData] = useState([]);
       const [cablesData, setCablesData] = useState([]);
+      const [suggestions, setSuggestions] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
 
       useEffect(() => {
-        // 1. Initialize 3D Globe WebGL Canvas
+        // Initialize WebGL Globe Instance
         const world = Globe()(globeEl.current)
           .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
           .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
           .pointLat('lat')
           .pointLng('lng')
           .pointColor(() => '#00F0FF')
-          .pointRadius(0.3)
+          .pointRadius(0.35)
           .pointAltitude(0.015)
           .pathPoints(d => d.coords)
           .pathPointLat(p => p[1])
@@ -53,47 +55,41 @@
           .pathDashGap(0.008)
           .pathDashAnimateTime(12000);
 
-        // Store world reference for search manipulation
         worldRef.current = world;
-
-        // Auto rotation settings
         world.controls().autoRotate = true;
         world.controls().autoRotateSpeed = 0.4;
         world.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 });
 
-        // Event Listeners for Hover Tooltips
         world.onPointHover(point => setHovered(point ? { ...point, type: 'pop' } : null));
-        world.onPointClick(point => {
-          world.pointOfView({ lat: point.lat, lng: point.lng, altitude: 0.8 }, 1200);
-          world.controls().autoRotate = false;
-        });
-
+        world.onPointClick(point => flyToLocation(point.lat, point.lng, 0.8, point));
         world.onPathHover(path => setHovered(path ? { ...path, type: 'cable' } : null));
 
-        // 2. Fetch Real-World Subsea Cables & Landing Points from TeleGeography
+        // Fetch Subsea Data via jsDelivr CDN (Bypasses CORS restrictions completely)
+        const landingUrl = 'https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/landing-point/landing-point-geo.json';
+        const cableUrl = 'https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/cable/cable-geo.json';
+
         Promise.all([
-          fetch('https://raw.githubusercontent.com/telegeography/submarine-cable-map-data/master/public/api/v3/landing-point/landing-point-geo.json').then(r => r.json()),
-          fetch('https://raw.githubusercontent.com/telegeography/submarine-cable-map-data/master/public/api/v3/cable/cable-geo.json').then(r => r.json())
+          fetch(landingUrl).then(r => r.json()),
+          fetch(cableUrl).then(r => r.json())
         ]).then(([landingGeo, cableGeo]) => {
 
-          // Parse Landing Station PoPs
+          // Extract PoP Landing Stations
           const parsedPops = landingGeo.features.map(f => ({
             id: f.properties.id,
-            name: f.properties.name,
+            name: f.properties.name || 'Unknown Landing Station',
             lat: f.geometry.coordinates[1],
             lng: f.geometry.coordinates[0]
           }));
 
-          // Parse Subsea Cables
+          // Extract Cables
           const parsedCables = cableGeo.features.map(f => {
-            // Flatten multilinestring coordinates
             const lines = f.geometry.type === 'MultiLineString' 
               ? f.geometry.coordinates 
               : [f.geometry.coordinates];
             
             return {
               id: f.properties.id,
-              name: f.properties.name,
+              name: f.properties.name || 'Subsea Cable',
               color: f.properties.color || '#00F0FF',
               coords: lines.flat()
             };
@@ -102,41 +98,63 @@
           setPopsData(parsedPops);
           setCablesData(parsedCables);
 
-          // Update Globe with Real Data
           world.pointsData(parsedPops);
           world.pathsData(parsedCables);
           setLoading(false);
         }).catch(err => {
-          console.error("Error loading subsea data:", err);
+          console.error("CORS/Fetch Error:", err);
+          setError("Failed to load global data. Using offline mode.");
           setLoading(false);
         });
 
       }, []);
 
-      // Search Handling Logic
-      const handleSearch = (e) => {
-        e.preventDefault();
-        if (!search.trim() || !worldRef.current) return;
+      // Handle Live Typing & Autocomplete Suggestions
+      const handleInputChange = (e) => {
+        const val = e.target.value;
+        setSearch(val);
 
-        const query = search.toLowerCase().trim();
-        
-        // 1. Search Landing Point / PoP Name
-        const foundPoP = popsData.find(p => p.name.toLowerCase().includes(query));
-        
-        if (foundPoP) {
-          worldRef.current.pointOfView({ lat: foundPoP.lat, lng: foundPoP.lng, altitude: 0.7 }, 1500);
-          worldRef.current.controls().autoRotate = false;
-          setHovered({ ...foundPoP, type: 'pop' });
-          return;
+        if (val.trim().length > 1) {
+          const q = val.toLowerCase();
+          const popMatches = popsData
+            .filter(p => p.name.toLowerCase().includes(q))
+            .slice(0, 5)
+            .map(p => ({ ...p, itemType: 'pop' }));
+
+          const cableMatches = cablesData
+            .filter(c => c.name.toLowerCase().includes(q))
+            .slice(0, 3)
+            .map(c => ({ ...c, itemType: 'cable' }));
+
+          setSuggestions([...popMatches, ...cableMatches]);
+        } else {
+          setSuggestions([]);
         }
+      };
 
-        // 2. Search Subsea Cable Name
-        const foundCable = cablesData.find(c => c.name.toLowerCase().includes(query));
-        if (foundCable && foundCable.coords.length > 0) {
-          const midPoint = foundCable.coords[Math.floor(foundCable.coords.length / 2)];
-          worldRef.current.pointOfView({ lat: midPoint[1], lng: midPoint[0], altitude: 1.2 }, 1500);
+      const flyToLocation = (lat, lng, altitude = 0.8, entity = null) => {
+        if (worldRef.current) {
+          worldRef.current.pointOfView({ lat, lng, altitude }, 1500);
           worldRef.current.controls().autoRotate = false;
-          setHovered({ ...foundCable, type: 'cable' });
+          if (entity) setHovered(entity);
+          setSuggestions([]);
+        }
+      };
+
+      const handleSelectSuggestion = (item) => {
+        setSearch(item.name);
+        if (item.itemType === 'pop') {
+          flyToLocation(item.lat, item.lng, 0.7, { ...item, type: 'pop' });
+        } else if (item.itemType === 'cable' && item.coords.length > 0) {
+          const mid = item.coords[Math.floor(item.coords.length / 2)];
+          flyToLocation(mid[1], mid[0], 1.2, { ...item, type: 'cable' });
+        }
+      };
+
+      const handleSearchSubmit = (e) => {
+        e.preventDefault();
+        if (suggestions.length > 0) {
+          handleSelectSuggestion(suggestions[0]);
         }
       };
 
@@ -145,50 +163,72 @@
           worldRef.current.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 }, 1200);
           worldRef.current.controls().autoRotate = true;
           setHovered(null);
+          setSearch('');
+          setSuggestions([]);
         }
       };
 
       return (
         <div className="relative w-screen h-screen">
-          {/* Header & Controls Overlay */}
-          <div className="absolute top-6 left-8 z-10 max-w-sm">
+          {/* Controls Panel */}
+          <div className="absolute top-6 left-8 z-20 w-80">
             <div className="flex items-center gap-2">
               <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500">
                 LambdaLab
               </h1>
-              {loading && <span className="text-xs text-amber-400 animate-pulse font-mono">Loading Data...</span>}
+              {loading && <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded-full animate-pulse font-mono">Loading...</span>}
             </div>
             
             <p className="text-xs text-slate-400 mt-1">
-              Section 1: Real-World Interactive Subsea Cable Globe
+              Section 1: Global Subsea Cable & PoP Explorer
             </p>
 
-            {/* Search Box */}
-            <form onSubmit={handleSearch} className="mt-4 flex gap-2">
-              <input
-                type="text"
-                placeholder="Search PoP or Cable (e.g., Chennai, SMW6)..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 shadow-2xl backdrop-blur-md"
-              />
-              <button 
-                type="submit"
-                className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-xs text-white font-semibold rounded-xl transition-all shadow-lg"
-              >
-                Go
-              </button>
-            </form>
+            {/* Search Bar with Autocomplete Dropdown */}
+            <div className="relative mt-4">
+              <form onSubmit={handleSearchSubmit} className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Search PoP or Cable (e.g. Mumbai, SMW6)..."
+                  value={search}
+                  onChange={handleInputChange}
+                  className="w-full px-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 shadow-2xl backdrop-blur-md"
+                />
+                <button 
+                  type="submit"
+                  className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-xs text-white font-semibold rounded-xl transition-all shadow-lg"
+                >
+                  Go
+                </button>
+              </form>
+
+              {/* Suggestions List */}
+              {suggestions.length > 0 && (
+                <div className="absolute left-0 right-0 mt-1 bg-slate-900/95 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-30 max-h-60 overflow-y-auto backdrop-blur-md">
+                  {suggestions.map((item, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSelectSuggestion(item)}
+                      className="w-full text-left px-3 py-2 hover:bg-cyan-950/80 border-b border-slate-800/50 last:border-0 transition-all flex justify-between items-center"
+                    >
+                      <span className="text-xs font-medium text-slate-200 truncate">{item.name}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${item.itemType === 'pop' ? 'bg-cyan-900/60 text-cyan-300' : 'bg-indigo-900/60 text-indigo-300'}`}>
+                        {item.itemType === 'pop' ? 'PoP' : 'Cable'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button 
               onClick={resetCamera}
-              className="mt-2 text-[10px] text-slate-400 hover:text-cyan-400 underline transition-all"
+              className="mt-2 text-[10px] text-slate-400 hover:text-cyan-400 underline transition-all block"
             >
               Reset Camera View
             </button>
           </div>
 
-          {/* Hover Tooltip Overlay */}
+          {/* Hover Tooltip Card */}
           {hovered && (
             <div className="absolute bottom-8 left-8 z-10 p-4 bg-slate-900/95 border border-cyan-500/40 rounded-2xl shadow-2xl max-w-xs backdrop-blur-md animate-in fade-in duration-200">
               <div className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">
@@ -203,16 +243,11 @@
             </div>
           )}
 
-          {/* 3D Earth Render Container */}
+          {/* WebGL Canvas */}
           <div ref={globeEl} className="w-full h-full" />
         </div>
       );
     }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<LambdaLabGlobe />);
-  </script>
-</body>
-</html>
 
     ReactDOM.createRoot(document.getElementById('root')).render(<LambdaLabGlobe />);
   </script>
