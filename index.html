@@ -3,19 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LambdaLab 3D — Global Subsea Infrastructure</title>
-  
-  <!-- Tailwind CSS -->
+  <title>LambdaLab 3D — Subsea & PoP Engine</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  
-  <!-- React, ReactDOM, and Babel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/globe.gl@2.28.0/dist/globe.gl.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  
-  <!-- Three.js and Globe.GL -->
-  <script src="https://unpkg.com/three"></script>
-  <script src="https://unpkg.com/globe.gl"></script>
 </head>
 <body class="bg-slate-950 text-white overflow-hidden font-sans">
 
@@ -24,232 +18,163 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    function LambdaLabGlobe() {
-      const globeEl = useRef(null);
-      const worldRef = useRef(null);
+    // Guaranteed Fallback Hubs (Ensures search works 100% of the time)
+    const CORE_POPS = [
+      { name: "Mumbai, India", lat: 18.96, lng: 72.82 },
+      { name: "Chennai, India", lat: 13.08, lng: 80.27 },
+      { name: "Marseille, France", lat: 43.29, lng: 5.36 },
+      { name: "Singapore", lat: 1.35, lng: 103.81 },
+      { name: "Fujairah, UAE", lat: 25.12, lng: 56.32 },
+      { name: "Jeddah, Saudi Arabia", lat: 21.54, lng: 39.17 },
+      { name: "New York, USA", lat: 40.71, lng: -74.00 },
+      { name: "London, UK", lat: 51.50, lng: -0.12 },
+      { name: "Tokyo, Japan", lat: 35.67, lng: 139.65 }
+    ];
+
+    function App() {
+      const globeContainer = useRef(null);
+      const worldInstance = useRef(null);
       
-      const [search, setSearch] = useState('');
-      const [hovered, setHovered] = useState(null);
-      const [popsData, setPopsData] = useState([]);
-      const [cablesData, setCablesData] = useState([]);
-      const [suggestions, setSuggestions] = useState([]);
-      const [loading, setLoading] = useState(true);
-      const [error, setError] = useState(null);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [allPops, setAllPops] = useState(CORE_POPS);
+      const [results, setResults] = useState([]);
+      const [activeSelection, setActiveSelection] = useState(null);
+      const [status, setStatus] = useState("Initializing WebGL...");
 
       useEffect(() => {
-        // Initialize WebGL Globe Instance
-        const world = Globe()(globeEl.current)
+        // Build Globe instance safely
+        const world = Globe()(globeContainer.current)
           .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
           .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
           .pointLat('lat')
           .pointLng('lng')
           .pointColor(() => '#00F0FF')
-          .pointRadius(0.35)
-          .pointAltitude(0.015)
-          .pathPoints(d => d.coords)
-          .pathPointLat(p => p[1])
-          .pathPointLng(p => p[0])
-          .pathColor(d => d.color || '#38bdf8')
-          .pathStroke(1.2)
-          .pathDashLength(0.1)
-          .pathDashGap(0.008)
-          .pathDashAnimateTime(12000);
+          .pointRadius(0.5)
+          .pointAltitude(0.02)
+          .pointsData(CORE_POPS);
 
-        worldRef.current = world;
         world.controls().autoRotate = true;
-        world.controls().autoRotateSpeed = 0.4;
-        world.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 });
+        world.controls().autoRotateSpeed = 0.5;
+        world.pointOfView({ lat: 19.07, lng: 72.87, altitude: 2.0 }); // Default view centered near India/Indian Ocean
+        
+        world.onPointClick(pt => flyTo(pt.lat, pt.lng, pt.name));
+        worldInstance.current = world;
 
-        world.onPointHover(point => setHovered(point ? { ...point, type: 'pop' } : null));
-        world.onPointClick(point => flyToLocation(point.lat, point.lng, 0.8, point));
-        world.onPathHover(path => setHovered(path ? { ...path, type: 'cable' } : null));
-
-        // Fetch Subsea Data via jsDelivr CDN (Bypasses CORS restrictions completely)
-        const landingUrl = 'https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/landing-point/landing-point-geo.json';
-        const cableUrl = 'https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/cable/cable-geo.json';
-
-        Promise.all([
-          fetch(landingUrl).then(r => r.json()),
-          fetch(cableUrl).then(r => r.json())
-        ]).then(([landingGeo, cableGeo]) => {
-
-          // Extract PoP Landing Stations
-          const parsedPops = landingGeo.features.map(f => ({
-            id: f.properties.id,
-            name: f.properties.name || 'Unknown Landing Station',
-            lat: f.geometry.coordinates[1],
-            lng: f.geometry.coordinates[0]
-          }));
-
-          // Extract Cables
-          const parsedCables = cableGeo.features.map(f => {
-            const lines = f.geometry.type === 'MultiLineString' 
-              ? f.geometry.coordinates 
-              : [f.geometry.coordinates];
-            
-            return {
-              id: f.properties.id,
-              name: f.properties.name || 'Subsea Cable',
-              color: f.properties.color || '#00F0FF',
-              coords: lines.flat()
-            };
+        // Fetch expanded open-source landing points
+        fetch('https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/landing-point/landing-point-geo.json')
+          .then(res => res.json())
+          .then(data => {
+            const fetchedPops = data.features.map(f => ({
+              name: f.properties.name || 'Landing Station',
+              lat: f.geometry.coordinates[1],
+              lng: f.geometry.coordinates[0]
+            }));
+            setAllPops(fetchedPops);
+            world.pointsData(fetchedPops);
+            setStatus("Global Data Active");
+          })
+          .catch(err => {
+            console.log("Using core POP dataset", err);
+            setStatus("Core Hubs Active");
           });
-
-          setPopsData(parsedPops);
-          setCablesData(parsedCables);
-
-          world.pointsData(parsedPops);
-          world.pathsData(parsedCables);
-          setLoading(false);
-        }).catch(err => {
-          console.error("CORS/Fetch Error:", err);
-          setError("Failed to load global data. Using offline mode.");
-          setLoading(false);
-        });
-
       }, []);
 
-      // Handle Live Typing & Autocomplete Suggestions
-      const handleInputChange = (e) => {
-        const val = e.target.value;
-        setSearch(val);
+      const handleSearch = (e) => {
+        const query = e.target.value;
+        setSearchQuery(query);
 
-        if (val.trim().length > 1) {
-          const q = val.toLowerCase();
-          const popMatches = popsData
-            .filter(p => p.name.toLowerCase().includes(q))
-            .slice(0, 5)
-            .map(p => ({ ...p, itemType: 'pop' }));
-
-          const cableMatches = cablesData
-            .filter(c => c.name.toLowerCase().includes(q))
-            .slice(0, 3)
-            .map(c => ({ ...c, itemType: 'cable' }));
-
-          setSuggestions([...popMatches, ...cableMatches]);
+        if (query.trim().length > 0) {
+          const matches = allPops
+            .filter(p => p.name.toLowerCase().includes(query.toLowerCase()))
+            .slice(0, 6);
+          setResults(matches);
         } else {
-          setSuggestions([]);
+          setResults([]);
         }
       };
 
-      const flyToLocation = (lat, lng, altitude = 0.8, entity = null) => {
-        if (worldRef.current) {
-          worldRef.current.pointOfView({ lat, lng, altitude }, 1500);
-          worldRef.current.controls().autoRotate = false;
-          if (entity) setHovered(entity);
-          setSuggestions([]);
-        }
-      };
-
-      const handleSelectSuggestion = (item) => {
-        setSearch(item.name);
-        if (item.itemType === 'pop') {
-          flyToLocation(item.lat, item.lng, 0.7, { ...item, type: 'pop' });
-        } else if (item.itemType === 'cable' && item.coords.length > 0) {
-          const mid = item.coords[Math.floor(item.coords.length / 2)];
-          flyToLocation(mid[1], mid[0], 1.2, { ...item, type: 'cable' });
-        }
-      };
-
-      const handleSearchSubmit = (e) => {
-        e.preventDefault();
-        if (suggestions.length > 0) {
-          handleSelectSuggestion(suggestions[0]);
-        }
-      };
-
-      const resetCamera = () => {
-        if (worldRef.current) {
-          worldRef.current.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 }, 1200);
-          worldRef.current.controls().autoRotate = true;
-          setHovered(null);
-          setSearch('');
-          setSuggestions([]);
+      const flyTo = (lat, lng, name) => {
+        if (worldInstance.current) {
+          worldInstance.current.controls().autoRotate = false;
+          worldInstance.current.pointOfView({ lat, lng, altitude: 0.6 }, 1400);
+          setActiveSelection({ name, lat, lng });
+          setResults([]);
         }
       };
 
       return (
         <div className="relative w-screen h-screen">
-          {/* Controls Panel */}
-          <div className="absolute top-6 left-8 z-20 w-80">
-            <div className="flex items-center gap-2">
-              <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500">
-                LambdaLab
-              </h1>
-              {loading && <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded-full animate-pulse font-mono">Loading...</span>}
-            </div>
-            
-            <p className="text-xs text-slate-400 mt-1">
-              Section 1: Global Subsea Cable & PoP Explorer
+          {/* Header Overlay */}
+          <div className="absolute top-6 left-6 z-20 w-80">
+            <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
+              LambdaLab
+            </h1>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Section 1: Interactive Cable & PoP Explorer
             </p>
 
-            {/* Search Bar with Autocomplete Dropdown */}
-            <div className="relative mt-4">
-              <form onSubmit={handleSearchSubmit} className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Search PoP or Cable (e.g. Mumbai, SMW6)..."
-                  value={search}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 shadow-2xl backdrop-blur-md"
-                />
-                <button 
-                  type="submit"
-                  className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-xs text-white font-semibold rounded-xl transition-all shadow-lg"
-                >
-                  Go
-                </button>
-              </form>
+            {/* Search Input */}
+            <div className="relative mt-3">
+              <input
+                type="text"
+                placeholder="Type location (e.g. Mumbai, Chennai, Marseille)..."
+                value={searchQuery}
+                onChange={handleSearch}
+                className="w-full px-3.5 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 backdrop-blur-md shadow-2xl"
+              />
 
-              {/* Suggestions List */}
-              {suggestions.length > 0 && (
-                <div className="absolute left-0 right-0 mt-1 bg-slate-900/95 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-30 max-h-60 overflow-y-auto backdrop-blur-md">
-                  {suggestions.map((item, idx) => (
+              {/* Instant Dropdown Results */}
+              {results.length > 0 && (
+                <div className="absolute left-0 right-0 mt-1 bg-slate-900/95 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-30 max-h-52 overflow-y-auto">
+                  {results.map((item, idx) => (
                     <button
                       key={idx}
-                      onClick={() => handleSelectSuggestion(item)}
-                      className="w-full text-left px-3 py-2 hover:bg-cyan-950/80 border-b border-slate-800/50 last:border-0 transition-all flex justify-between items-center"
+                      onClick={() => flyTo(item.lat, item.lng, item.name)}
+                      className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-cyan-950/80 hover:text-cyan-300 border-b border-slate-800/60 last:border-0 transition-colors"
                     >
-                      <span className="text-xs font-medium text-slate-200 truncate">{item.name}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${item.itemType === 'pop' ? 'bg-cyan-900/60 text-cyan-300' : 'bg-indigo-900/60 text-indigo-300'}`}>
-                        {item.itemType === 'pop' ? 'PoP' : 'Cable'}
-                      </span>
+                      📍 {item.name}
                     </button>
                   ))}
                 </div>
               )}
             </div>
 
-            <button 
-              onClick={resetCamera}
-              className="mt-2 text-[10px] text-slate-400 hover:text-cyan-400 underline transition-all block"
-            >
-              Reset Camera View
-            </button>
+            <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
+              <span>Status: <strong className="text-cyan-400">{status}</strong></span>
+              <button 
+                onClick={() => {
+                  worldInstance.current.pointOfView({ lat: 20, lng: 70, altitude: 2.0 }, 1000);
+                  worldInstance.current.controls().autoRotate = true;
+                  setActiveSelection(null);
+                  setSearchQuery('');
+                }}
+                className="hover:text-cyan-400 underline"
+              >
+                Reset Camera
+              </button>
+            </div>
           </div>
 
-          {/* Hover Tooltip Card */}
-          {hovered && (
-            <div className="absolute bottom-8 left-8 z-10 p-4 bg-slate-900/95 border border-cyan-500/40 rounded-2xl shadow-2xl max-w-xs backdrop-blur-md animate-in fade-in duration-200">
-              <div className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">
-                {hovered.type === 'pop' ? '⚡ Landing Station / PoP' : '🌊 Subsea Cable Route'}
-              </div>
-              <h3 className="text-base font-bold text-white">{hovered.name}</h3>
-              {hovered.lat && (
-                <p className="text-xs text-slate-400 font-mono mt-1">
-                  Coords: {hovered.lat.toFixed(2)}°, {hovered.lng.toFixed(2)}°
-                </p>
-              )}
+          {/* Active Location Card */}
+          {activeSelection && (
+            <div className="absolute bottom-6 left-6 z-20 p-4 bg-slate-900/95 border border-cyan-500/40 rounded-2xl shadow-2xl max-w-xs backdrop-blur-md">
+              <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
+                ⚡ Point of Presence (PoP)
+              </span>
+              <h3 className="text-sm font-bold text-white mt-1">{activeSelection.name}</h3>
+              <p className="text-[11px] text-slate-400 font-mono mt-1">
+                Lat: {activeSelection.lat.toFixed(2)}° | Lng: {activeSelection.lng.toFixed(2)}°
+              </p>
             </div>
           )}
 
           {/* WebGL Canvas */}
-          <div ref={globeEl} className="w-full h-full" />
+          <div ref={globeContainer} className="w-full h-full" />
         </div>
       );
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<LambdaLabGlobe />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
