@@ -18,49 +18,35 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // Guaranteed Fallback Hubs (Ensures search works 100% of the time)
-    const CORE_POPS = [
-      { name: "Mumbai, India", lat: 18.96, lng: 72.82 },
-      { name: "Chennai, India", lat: 13.08, lng: 80.27 },
-      { name: "Marseille, France", lat: 43.29, lng: 5.36 },
-      { name: "Singapore", lat: 1.35, lng: 103.81 },
-      { name: "Fujairah, UAE", lat: 25.12, lng: 56.32 },
-      { name: "Jeddah, Saudi Arabia", lat: 21.54, lng: 39.17 },
-      { name: "New York, USA", lat: 40.71, lng: -74.00 },
-      { name: "London, UK", lat: 51.50, lng: -0.12 },
-      { name: "Tokyo, Japan", lat: 35.67, lng: 139.65 }
-    ];
-
     function App() {
       const globeContainer = useRef(null);
       const worldInstance = useRef(null);
       
       const [searchQuery, setSearchQuery] = useState('');
-      const [allPops, setAllPops] = useState(CORE_POPS);
+      const [allPops, setAllPops] = useState([]);
       const [results, setResults] = useState([]);
       const [activeSelection, setActiveSelection] = useState(null);
-      const [status, setStatus] = useState("Initializing WebGL...");
+      const [status, setStatus] = useState("Fetching Global Subsea Network...");
 
+      // 1. Initialize WebGL Globe Instance
       useEffect(() => {
-        // Build Globe instance safely
         const world = Globe()(globeContainer.current)
           .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
           .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
           .pointLat('lat')
           .pointLng('lng')
           .pointColor(() => '#00F0FF')
-          .pointRadius(0.5)
-          .pointAltitude(0.02)
-          .pointsData(CORE_POPS);
+          .pointRadius(0.35)
+          .pointAltitude(0.015);
 
         world.controls().autoRotate = true;
-        world.controls().autoRotateSpeed = 0.5;
-        world.pointOfView({ lat: 19.07, lng: 72.87, altitude: 2.0 }); // Default view centered near India/Indian Ocean
+        world.controls().autoRotateSpeed = 0.4;
+        world.pointOfView({ lat: 20.0, lng: 70.0, altitude: 2.2 });
         
         world.onPointClick(pt => flyTo(pt.lat, pt.lng, pt.name));
         worldInstance.current = world;
 
-        // Fetch expanded open-source landing points
+        // Fetch ALL Global Subsea Landing Points & PoPs (3000+ Locations)
         fetch('https://cdn.jsdelivr.net/gh/telegeography/submarine-cable-map-data@master/public/api/v3/landing-point/landing-point-geo.json')
           .then(res => res.json())
           .then(data => {
@@ -69,15 +55,22 @@
               lat: f.geometry.coordinates[1],
               lng: f.geometry.coordinates[0]
             }));
+            
             setAllPops(fetchedPops);
-            world.pointsData(fetchedPops);
-            setStatus("Global Data Active");
+            setStatus(`Loaded ${fetchedPops.length} Global PoPs`);
           })
           .catch(err => {
-            console.log("Using core POP dataset", err);
-            setStatus("Core Hubs Active");
+            console.error("Fetch error:", err);
+            setStatus("Failed to load global API");
           });
       }, []);
+
+      // 2. Reactively Sync Dataset into WebGL Engine whenever allPops updates
+      useEffect(() => {
+        if (worldInstance.current && allPops.length > 0) {
+          worldInstance.current.pointsData(allPops);
+        }
+      }, [allPops]);
 
       const handleSearch = (e) => {
         const query = e.target.value;
@@ -86,7 +79,7 @@
         if (query.trim().length > 0) {
           const matches = allPops
             .filter(p => p.name.toLowerCase().includes(query.toLowerCase()))
-            .slice(0, 6);
+            .slice(0, 8);
           setResults(matches);
         } else {
           setResults([]);
@@ -117,7 +110,7 @@
             <div className="relative mt-3">
               <input
                 type="text"
-                placeholder="Type location (e.g. Mumbai, Chennai, Marseille)..."
+                placeholder="Search any global city/PoP (e.g. Mumbai, Tokyo, Bude)..."
                 value={searchQuery}
                 onChange={handleSearch}
                 className="w-full px-3.5 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 backdrop-blur-md shadow-2xl"
